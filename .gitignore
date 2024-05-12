@@ -1,0 +1,11 @@
+# Terraform
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+
+# Archivos de configuración sensibles
+*.tfvars
+
+# Archivos de registro y temporales
+*.log
+*.tmp
