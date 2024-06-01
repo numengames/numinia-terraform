@@ -38,7 +38,7 @@ resource "aws_ecs_task_definition" "task_definition" {
         timeout  = 5
         retries  = 3
         interval = 30
-        command  = ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+        command  = ["CMD-SHELL", "curl -f http://localhost:8000/monit/health || exit 1"]
       }
       portMappings = [
         {
