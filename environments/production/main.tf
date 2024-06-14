@@ -67,6 +67,18 @@ module "numinia_integrations" {
   github_secret_arn   = module.secrets_manager.github_secret_manager_arn
 }
 
+module "numinia_core_api" {
+  source              = "../../modules/numinia-core-api"
+  server_name         = var.server_name
+  domain_name         = var.domain_name
+  vpc_id              = module.main_vpc.vpc_id
+  vpc_subnet          = module.main_vpc.subnet_info
+  cluster_id          = module.ecs_cluster.cluster_id
+  acm_certificate_arn = var.acm_certificate_arn.eu_west
+  task_role_arn       = module.iam.ecs_task_execution_role_github_arn
+  github_secret_arn   = module.secrets_manager.github_secret_manager_arn
+}
+
 module "numinia_discord_bots" {
   source              = "../../modules/numinia-discord-bots"
   server_name         = var.server_name
