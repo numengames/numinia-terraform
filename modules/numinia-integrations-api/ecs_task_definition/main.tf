@@ -1,5 +1,5 @@
 resource "aws_cloudwatch_log_group" "fargate_log_group" {
-  name = "/ecs/my-fargate-service"
+  name = "/ecs/${var.resource_name}-fargate-service"
 }
 
 resource "aws_cloudwatch_log_stream" "fargate_log_stream" {
@@ -50,14 +50,14 @@ resource "aws_ecs_task_definition" "task_definition" {
       repositoryCredentials = {
         credentialsParameter = var.github_secret_arn
       }
-      logConfiguration : {
-        logDriver : "awslogs",
-        options : {
-          "awslogs-group" : "${aws_cloudwatch_log_group.fargate_log_group.name}",
-          "awslogs-stream-prefix" : "fargate-log-stream",
-          "awslogs-region" : "eu-west-1"
-        }
-      }
+      # logConfiguration: { // In case we want to debug something about the container
+      #   logDriver: "awslogs",
+      #   options: {
+      #     "awslogs-group": "${aws_cloudwatch_log_group.fargate_log_group.name}",
+      #     "awslogs-stream-prefix": "fargate-log-stream",
+      #     "awslogs-region": "eu-west-1"
+      #   }
+      # }
     }
   ])
 }
