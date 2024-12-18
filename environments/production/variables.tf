@@ -29,7 +29,7 @@ variable "github_CI_CD" {
 
 variable "github_secret_name" {
   type    = string
-  default = "github-deploy-key-secret"
+  default = "github-deploy-key-secret-1"
 }
 
 ######################

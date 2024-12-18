@@ -1,7 +1,8 @@
 # Terraform
 .terraform/
-terraform.tfstate
-terraform.tfstate.backup
+*.tfstate
+*.tfstate.backup
+terraform.tfstate.*.backup
 
 # Archivos de configuración sensibles
 *.tfvars

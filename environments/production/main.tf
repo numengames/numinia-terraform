@@ -42,8 +42,7 @@ module "main_vpc" {
   vpc = {
     region         = var.region
     igw_cidr_block = "0.0.0.0/0"
-    range          = "10.0.0.0/16"
-    subnet_range   = "10.0.1.0/24"
+    range          = "10.0.0.0/27"
     igw_name       = "${var.server_name}-main-igw"
     name           = "${var.server_name}-main-vpc"
     subnet_name    = "${var.server_name}-main-subnet"
@@ -91,14 +90,14 @@ module "numinia_discord_bots" {
   github_secret_arn   = module.secrets_manager.github_secret_manager_arn
 }
 
-module "numinia_d20" {
-  source              = "../../modules/numinia-d20"
-  server_name         = var.server_name
-  domain_name         = var.domain_name
-  vpc_id              = module.main_vpc.vpc_id
-  vpc_subnet          = module.main_vpc.subnet_info
-  cluster_id          = module.ecs_cluster.cluster_id
-  acm_certificate_arn = var.acm_certificate_arn.eu_west
-  task_role_arn       = module.iam.ecs_task_execution_role_github_arn
-  github_secret_arn   = module.secrets_manager.github_secret_manager_arn
-}
+# module "numinia_d20" {
+#   source              = "../../modules/numinia-d20"
+#   server_name         = var.server_name
+#   domain_name         = var.domain_name
+#   vpc_id              = module.main_vpc.vpc_id
+#   vpc_subnet          = module.main_vpc.subnet_info
+#   cluster_id          = module.ecs_cluster.cluster_id
+#   acm_certificate_arn = var.acm_certificate_arn.eu_west
+#   task_role_arn       = module.iam.ecs_task_execution_role_github_arn
+#   github_secret_arn   = module.secrets_manager.github_secret_manager_arn
+# }

@@ -7,7 +7,7 @@ terraform {
 }
 
 resource "aws_acm_certificate" "certificate" {
-  validation_method = "EMAIL"
+  validation_method = "DNS"
   domain_name       = var.domain_name
 
   subject_alternative_names = [

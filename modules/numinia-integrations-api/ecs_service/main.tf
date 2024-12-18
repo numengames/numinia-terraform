@@ -5,13 +5,12 @@ resource "aws_ecs_service" "service" {
   task_definition = var.task_definition_arn
   name            = "${var.resource_name}-service"
 
-  deployment_minimum_healthy_percent = 0
-  deployment_maximum_percent         = 100
+  deployment_minimum_healthy_percent = 50
+  deployment_maximum_percent         = 200
 
   deployment_controller {
     type = "ECS"
   }
-
 
   network_configuration {
     subnets = [

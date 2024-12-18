@@ -2,6 +2,32 @@ resource "aws_cloudfront_origin_access_identity" "oai" {
   comment = "OAI for accessing S3 bucket"
 }
 
+resource "aws_cloudfront_response_headers_policy" "statics_s3_bucket_policy" {
+  name = "CustomResponseHeadersPolicy"
+
+  cors_config {
+    access_control_allow_origins {
+      items = ["*"]
+    }
+    access_control_allow_methods {
+      items = ["GET", "HEAD", "OPTIONS"]
+    }
+    access_control_allow_headers {
+      items = ["Content-Type", "Authorization", "X-Amz-Date", "X-Api-Key", "X-Amz-Security-Token"]
+    }
+    access_control_allow_credentials = true
+    origin_override                  = true
+  }
+
+  custom_headers_config {
+    items {
+      header   = "X-Custom-Header"
+      value    = "CustomValue"
+      override = true
+    }
+  }
+}
+
 resource "aws_cloudfront_distribution" "static_resources_distribution" {
   origin {
     origin_id   = var.s3.statics_bucket_id
@@ -15,7 +41,7 @@ resource "aws_cloudfront_distribution" "static_resources_distribution" {
   enabled         = true
   is_ipv6_enabled = true
 
-  aliases = ["statics.${var.domain_name}"]
+  # aliases = ["statics.${var.domain_name}"]
 
   default_cache_behavior {
     target_origin_id = var.s3.statics_bucket_id
