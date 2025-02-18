@@ -9,9 +9,9 @@ resource "aws_iam_role" "eks_admin" {
         Action = "sts:AssumeRole"
         Effect = "Allow"
         Principal = {
-          AWS = "arn:aws:iam::${var.aws_account_id}:user/terraform"
+          AWS = ["arn:aws:iam::${var.aws_account_id}:user/terraform"]
           Service = "eks.amazonaws.com"
-        }
+        },
       }
     ]
   })
@@ -21,6 +21,25 @@ resource "aws_iam_role" "eks_admin" {
     Environment = var.environment
     ManagedBy   = "terraform"
   }
+}
+
+resource "aws_iam_policy" "eks_admin_self_assume" {
+  name = "${var.cluster_name}-k8s-admin-self-assume"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = "sts:AssumeRole"
+        Resource = aws_iam_role.eks_admin.arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "eks_admin_self_assume" {
+  policy_arn = aws_iam_policy.eks_admin_self_assume.arn
+  role       = aws_iam_role.eks_admin.name
 }
 
 # Política para permitir acceso administrativo a EKS

@@ -131,7 +131,12 @@ The repository is organized as follows:
 - **Files:** `modules/secrets-manager/main.tf`, `modules/secrets-manager/output.tf`, `modules/secrets-manager/variables.tf`
 
 ### EKS
-- **Purpose:** Deploy and configure an AWS-managed Kubernetes cluster (EKS) including node groups, IAM roles, a Network Load Balancer, EFS integration, and add-ons (CoreDNS, VPC CNI, etc.).
+- **Purpose:** Deploy and configure an AWS-managed Kubernetes cluster (EKS) including:
+  - Node groups with autoscaling capabilities
+  - IAM roles and policies
+  - Network Load Balancer integration
+  - Organization-based EFS storage
+  - Add-ons (CoreDNS, VPC CNI, etc.)
 - **Files:** Located under `modules/eks/` and split into submodules for the cluster, IAM, NLB, storage, etc.
 
 ## Configuration Management
@@ -148,30 +153,8 @@ Sensitive and environment-specific configurations are stored in AWS Secrets Mana
 The secret structure should follow this format:
 ```json
 {
-  "server_name": "your-server-name",
-  "domain_name": "your-domain.com",
   "aws_access_key": "your-access-key",
   "aws_secret_key": "your-secret-key",
-  "cluster_config": {
-    "max_cpu": "4",
-    "max_memory": "8Gi",
-    "max_pods": 50,
-    "max_storage": "50Gi"
-  },
-  "node_groups": {
-    "worker-group": {
-      "instance_type": "t3.small",
-      "min_size": 1,
-      "max_size": 3,
-      "desired_size": 1,
-      "capacity_type": "SPOT",
-      "labels": {
-        "role": "worker",
-        "NodeType": "memory"
-      },
-      "taints": []
-    }
-  }
 }
 ```
 
@@ -199,6 +182,7 @@ Local configuration is limited to:
 - Environment selection
 - Feature flags
 - AWS Secrets Manager reference
+- Organization list for EFS storage
 
 Example `terraform.tfvars`:
 ```hcl
@@ -212,7 +196,26 @@ secret_name = "numinia/terraform/production"
 enable_certificate_manager = false
 enable_storage            = false
 enable_route53           = false
+
+# Organizations Configuration
+organizations = ["XXXX"]  # Add more organizations as needed
 ```
+
+## Storage Management
+
+### EFS Storage
+The project supports multiple EFS file systems, one per organization:
+
+- **Organization-based Storage:** Each organization gets its own dedicated EFS
+- **Automatic Encryption:** All EFS volumes are encrypted by default
+- **Backup Policy:** Automatic backups enabled for all EFS volumes
+- **Multi-AZ:** Mount targets in multiple availability zones
+- **Security:** Dedicated security group with proper NFS access rules
+
+To add a new organization's storage:
+1. Add the organization to the `organizations` list in your `terraform.tfvars`
+2. Apply the changes with Terraform
+3. The new EFS will be automatically created with all necessary configurations
 
 ## Getting Started
 

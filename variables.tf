@@ -30,3 +30,28 @@ variable "secret_name" {
   type        = string
   default     = "numinia/terraform/production"
 }
+
+variable "server_name" {
+  description = "Server name"
+  type        = string
+}
+
+variable "domain_name" {
+  description = "Domain name"
+  type        = string
+}
+
+variable "cluster_config" {
+  description = "Cluster configuration"
+  type        = map(string)
+}
+
+variable "node_groups" {
+  description = "Node groups configuration"
+  type        = map(any)
+}
+
+variable "organizations" {
+  description = "List of organizations that need EFS storage"
+  type        = set(string)
+}

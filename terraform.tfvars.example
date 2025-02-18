@@ -1,3 +1,30 @@
+###############################################################################
+# IMPORTANT: The following configuration has been moved to AWS Secrets Manager  #
+# Use this as a reference for the structure of your secret                     #
+###############################################################################
+
+# Secret structure in AWS Secrets Manager:
+# {
+#   "aws_access_key": "your-access-key",
+#   "aws_secret_key": "your-secret-key",
+# }
+
+###############################################################################
+# IMPORTANT: State management has been moved to S3 with DynamoDB locking       #
+# This is configured in main.tf and doesn't require variables                  #
+###############################################################################
+
+# Backend Configuration (for reference only, configured in main.tf):
+# terraform {
+#   backend "s3" {
+#     bucket         = "xxx-terraform-state"
+#     key            = "environments/production/terraform.tfstate"
+#     region         = "eu-west-1"
+#     dynamodb_table = "xxx-terraform-locks"
+#     encrypt        = true
+#   }
+# }
+
 # Environment Configuration
 environment = "production"
 
@@ -9,50 +36,26 @@ enable_certificate_manager = false  # Set to true to enable ACM certificate mana
 enable_storage            = false  # Set to true to enable S3 and CloudFront setup
 enable_route53           = false  # Set to true to enable Route53 DNS management
 
-###############################################################################
-# IMPORTANT: The following configuration has been moved to AWS Secrets Manager  #
-# Use this as a reference for the structure of your secret                     #
-###############################################################################
+# Organizations Configuration
+organizations = ["xxxxxx"]  # Add more organizations as needed, e.g., ["numinia", "org2", "org3"]
 
-# Secret structure in AWS Secrets Manager:
-# {
-#   "server_name": "numinia",
-#   "domain_name": "numinia.xyz",
-#   "aws_access_key": "your-access-key",
-#   "aws_secret_key": "your-secret-key",
-#   "cluster_config": {
-#     "max_cpu": "16",
-#     "max_memory": "32Gi",
-#     "max_pods": 100,
-#     "max_storage": "200Gi"
-#   },
-#   "node_groups": {
-#     "worker-group": {
-#       "instance_type": "t3.medium",
-#       "min_size": 2,
-#       "max_size": 10,
-#       "desired_size": 3,
-#       "capacity_type": "ON_DEMAND",
-#       "labels": {
-#         "role": "worker"
-#       },
-#       "taints": []
-#     }
-#   }
-# }
+cluster_config = {
+    max_cpu = "xxx"
+    max_memory = "xxx"
+    max_pods = xxx
+    max_storage = "xxx"
+}
 
-###############################################################################
-# IMPORTANT: State management has been moved to S3 with DynamoDB locking       #
-# This is configured in main.tf and doesn't require variables                  #
-###############################################################################
-
-# Backend Configuration (for reference only, configured in main.tf):
-# terraform {
-#   backend "s3" {
-#     bucket         = "numinia-terraform-state"
-#     key            = "environments/production/terraform.tfstate"
-#     region         = "eu-west-1"
-#     dynamodb_table = "numinia-terraform-locks"
-#     encrypt        = true
-#   }
-# }
+node_groups = {
+    worker-group = {
+        instance_type = "xxx"
+        min_size = xxx
+        max_size = xxx
+        desired_size = xxx
+        capacity_type = "xxx"
+        labels = {
+            role = "xxx"
+        }
+        taints = []
+    }
+}

@@ -58,3 +58,9 @@ variable "node_groups" {
     })), [])
   }))
 }
+
+variable "organizations" {
+  description = "List of organizations that need EFS storage"
+  type        = set(string)
+  default     = ["numinia"]
+}
