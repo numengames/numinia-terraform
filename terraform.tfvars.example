@@ -1,0 +1,58 @@
+# Environment Configuration
+environment = "production"
+
+# AWS Secrets Manager Configuration
+secret_name = "numinia/terraform/production"  # The name of your secret in AWS Secrets Manager
+
+# Feature Flags
+enable_certificate_manager = false  # Set to true to enable ACM certificate management
+enable_storage            = false  # Set to true to enable S3 and CloudFront setup
+enable_route53           = false  # Set to true to enable Route53 DNS management
+
+###############################################################################
+# IMPORTANT: The following configuration has been moved to AWS Secrets Manager  #
+# Use this as a reference for the structure of your secret                     #
+###############################################################################
+
+# Secret structure in AWS Secrets Manager:
+# {
+#   "server_name": "numinia",
+#   "domain_name": "numinia.xyz",
+#   "aws_access_key": "your-access-key",
+#   "aws_secret_key": "your-secret-key",
+#   "cluster_config": {
+#     "max_cpu": "16",
+#     "max_memory": "32Gi",
+#     "max_pods": 100,
+#     "max_storage": "200Gi"
+#   },
+#   "node_groups": {
+#     "worker-group": {
+#       "instance_type": "t3.medium",
+#       "min_size": 2,
+#       "max_size": 10,
+#       "desired_size": 3,
+#       "capacity_type": "ON_DEMAND",
+#       "labels": {
+#         "role": "worker"
+#       },
+#       "taints": []
+#     }
+#   }
+# }
+
+###############################################################################
+# IMPORTANT: State management has been moved to S3 with DynamoDB locking       #
+# This is configured in main.tf and doesn't require variables                  #
+###############################################################################
+
+# Backend Configuration (for reference only, configured in main.tf):
+# terraform {
+#   backend "s3" {
+#     bucket         = "numinia-terraform-state"
+#     key            = "environments/production/terraform.tfstate"
+#     region         = "eu-west-1"
+#     dynamodb_table = "numinia-terraform-locks"
+#     encrypt        = true
+#   }
+# }

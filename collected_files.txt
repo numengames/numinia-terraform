@@ -1,0 +1,2791 @@
+=== File: modules/vpc/output.tf ===
+
+output "vpc_id" {
+  value = aws_vpc.vpc.id
+}
+
+output "subnet_ids" {
+  value = {
+    id_a = aws_subnet.subnet_a.id
+    id_b = aws_subnet.subnet_b.id
+  }
+}
+
+output "cluster_security_group_id" {
+  value = module.security_groups.cluster_security_group_id
+} 
+=== File: modules/vpc/main.tf ===
+
+resource "aws_vpc" "vpc" {
+  cidr_block           = var.vpc.range
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = {
+    Name                                           = var.vpc.name
+    "kubernetes.io/cluster/${var.vpc.name}-cluster" = "shared"
+  }
+}
+
+resource "aws_subnet" "subnet_a" {
+  vpc_id                  = aws_vpc.vpc.id
+  cidr_block              = "10.0.0.0/17"
+  availability_zone       = "${var.vpc.region}a"
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name                                           = "${var.vpc.subnet_name}-a"
+    "kubernetes.io/cluster/${var.vpc.name}-cluster" = "shared"
+    "kubernetes.io/role/elb"                       = "1"
+  }
+}
+
+resource "aws_subnet" "subnet_b" {
+  vpc_id                  = aws_vpc.vpc.id
+  cidr_block              = "10.0.128.0/17"
+  availability_zone       = "${var.vpc.region}b"
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name                                           = "${var.vpc.subnet_name}-b"
+    "kubernetes.io/cluster/${var.vpc.name}-cluster" = "shared"
+    "kubernetes.io/role/elb"                       = "1"
+  }
+}
+
+resource "aws_internet_gateway" "internet_gateway" {
+  vpc_id = aws_vpc.vpc.id
+
+  tags = {
+    Name = var.vpc.igw_name
+  }
+}
+
+resource "aws_route" "route_to_igw" {
+  destination_cidr_block = var.vpc.igw_cidr_block
+  route_table_id         = aws_vpc.vpc.main_route_table_id
+  gateway_id             = aws_internet_gateway.internet_gateway.id
+}
+
+module "security_groups" {
+  source   = "./security-groups"
+  vpc_id   = aws_vpc.vpc.id
+  vpc_name = var.vpc.name
+}
+=== File: modules/vpc/security-groups/output.tf ===
+
+output "cluster_security_group_id" {
+  description = "ID of the cluster security group"
+  value       = aws_security_group.cluster_sg.id
+} 
+=== File: modules/vpc/security-groups/main.tf ===
+
+resource "aws_security_group" "cluster_sg" {
+  name_prefix = "${var.vpc_name}-cluster-sg"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "HTTP inbound for certificate validation"
+  }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "HTTPS inbound traffic"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound traffic"
+  }
+
+  tags = {
+    Name = "${var.vpc_name}-cluster-sg"
+  }
+} 
+=== File: modules/vpc/security-groups/variables.tf ===
+
+variable "vpc_id" {
+  description = "ID of the VPC where the security groups will be created"
+  type        = string
+}
+
+variable "vpc_name" {
+  description = "Name of the VPC, used for tagging and naming resources"
+  type        = string
+} 
+=== File: modules/vpc/variables.tf ===
+
+variable "vpc" {
+  description = "vpc data"
+}
+
+=== File: modules/acm/output.tf ===
+
+output "certificate_arn" {
+  description = "ARN of the certificate"
+  value       = aws_acm_certificate.certificate.arn
+}
+
+output "domain_validation_options" {
+  description = "Domain validation options for the certificate"
+  value       = aws_acm_certificate.certificate.domain_validation_options
+}
+
+output "validation_emails" {
+  description = "List of email addresses that can be used to validate the certificate (only for EMAIL validation)"
+  value       = var.validation_method == "EMAIL" ? aws_acm_certificate.certificate.validation_emails : []
+}
+
+output "status" {
+  description = "Status of the certificate"
+  value       = aws_acm_certificate.certificate.status
+}
+
+output "validation_method" {
+  description = "Validation method used for the certificate"
+  value       = aws_acm_certificate.certificate.validation_method
+}
+=== File: modules/acm/main.tf ===
+
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 4.0.0"
+    }
+  }
+}
+
+resource "aws_acm_certificate" "certificate" {
+  validation_method         = var.validation_method
+  domain_name              = var.domain_name
+  subject_alternative_names = length(var.subject_alternative_names) > 0 ? var.subject_alternative_names : ["*.${var.domain_name}"]
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  tags = {
+    Name        = "SSL Certificate for ${var.domain_name}"
+    Environment = terraform.workspace
+  }
+}
+
+# Validation records for DNS method
+resource "aws_route53_record" "validation" {
+  for_each = var.validation_method == "DNS" ? {
+    for dvo in aws_acm_certificate.certificate.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  } : {}
+
+  allow_overwrite = true
+  name            = each.value.name
+  records         = [each.value.record]
+  ttl             = 60
+  type            = each.value.type
+  zone_id         = data.aws_route53_zone.zone[0].zone_id
+}
+
+# Data source for Route53 zone (only when using DNS validation)
+data "aws_route53_zone" "zone" {
+  count = var.validation_method == "DNS" ? 1 : 0
+  name  = var.domain_name
+}
+=== File: modules/acm/variables.tf ===
+
+variable "domain_name" {
+  type        = string
+  description = "Domain name for the SSL certificate"
+}
+
+variable "validation_method" {
+  type        = string
+  description = "Certificate validation method. Can be either DNS or EMAIL"
+  validation {
+    condition     = contains(["DNS", "EMAIL"], var.validation_method)
+    error_message = "Validation method must be either DNS or EMAIL"
+  }
+}
+
+variable "subject_alternative_names" {
+  type        = list(string)
+  description = "List of alternative domain names for the certificate"
+  default     = []
+}
+=== File: modules/storage/policies/s3/cloudfront-access/main.tf ===
+
+data "aws_caller_identity" "current" {}
+
+resource "aws_s3_bucket_policy" "cloudfront_access_policy" {
+  bucket = var.bucket_id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect = "Allow",
+      Principal = {
+        AWS = var.cloudfront_oai_arn
+      },
+      Action = ["s3:GetObject"],
+      Resource = [
+        "${var.bucket_arn}",
+        "${var.bucket_arn}/*",
+      ],
+    }]
+  })
+} 
+=== File: modules/storage/policies/s3/cloudfront-access/variables.tf ===
+
+variable "bucket_id" {
+  type        = string
+  description = "ID of the S3 bucket to apply the policy to"
+}
+
+variable "bucket_arn" {
+  type        = string
+  description = "ARN of the S3 bucket"
+}
+
+variable "cloudfront_oai_arn" {
+  type        = string
+  description = "ARN of the CloudFront Origin Access Identity"
+} 
+=== File: modules/storage/policies/s3/bucket/main.tf ===
+
+resource "aws_s3_bucket_public_access_block" "bucket_access" {
+  bucket = var.bucket_id
+
+  block_public_acls       = var.block_public_access.acls
+  block_public_policy     = var.block_public_access.policy
+  ignore_public_acls      = var.block_public_access.ignore_acls
+  restrict_public_buckets = var.block_public_access.restrict_buckets
+}
+
+resource "aws_s3_bucket_versioning" "bucket_versioning" {
+  count  = var.enable_versioning ? 1 : 0
+  bucket = var.bucket_id
+  
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "bucket_encryption" {
+  count  = var.enable_encryption ? 1 : 0
+  bucket = var.bucket_id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+} 
+=== File: modules/storage/policies/s3/bucket/variables.tf ===
+
+variable "bucket_id" {
+  type        = string
+  description = "ID of the S3 bucket to apply the policies to"
+}
+
+variable "block_public_access" {
+  type = object({
+    acls             = bool
+    policy           = bool
+    ignore_acls      = bool
+    restrict_buckets = bool
+  })
+  description = "Configuration for blocking public access"
+  default = {
+    acls             = true
+    policy           = true
+    ignore_acls      = true
+    restrict_buckets = true
+  }
+}
+
+variable "enable_versioning" {
+  type        = bool
+  description = "Whether to enable versioning for the bucket"
+  default     = false
+}
+
+variable "enable_encryption" {
+  type        = bool
+  description = "Whether to enable server-side encryption for the bucket"
+  default     = true
+} 
+=== File: modules/storage/policies/cloudfront/cache/output.tf ===
+
+output "policy_id" {
+  value       = aws_cloudfront_cache_policy.cache_policy.id
+  description = "ID of the CloudFront cache policy"
+}
+
+output "policy_etag" {
+  value       = aws_cloudfront_cache_policy.cache_policy.etag
+  description = "Current version of the CloudFront cache policy"
+} 
+=== File: modules/storage/policies/cloudfront/cache/main.tf ===
+
+resource "aws_cloudfront_cache_policy" "cache_policy" {
+  name        = var.policy_name
+  comment     = var.policy_comment
+  min_ttl     = var.ttl_settings.min_ttl
+  default_ttl = var.ttl_settings.default_ttl
+  max_ttl     = var.ttl_settings.max_ttl
+
+  parameters_in_cache_key_and_forwarded_to_origin {
+    cookies_config {
+      cookie_behavior = var.cookies_behavior
+      cookies {
+        items = var.cookies_to_forward
+      }
+    }
+
+    headers_config {
+      header_behavior = var.headers_behavior
+      headers {
+        items = var.headers_to_forward
+      }
+    }
+
+    query_strings_config {
+      query_string_behavior = var.query_strings_behavior
+      query_strings {
+        items = var.query_strings_to_forward
+      }
+    }
+  }
+} 
+=== File: modules/storage/policies/cloudfront/cache/variables.tf ===
+
+variable "policy_name" {
+  type        = string
+  description = "Name of the CloudFront cache policy"
+}
+
+variable "policy_comment" {
+  type        = string
+  description = "Comment for the CloudFront cache policy"
+  default     = "Managed by Terraform"
+}
+
+variable "ttl_settings" {
+  type = object({
+    min_ttl     = number
+    default_ttl = number
+    max_ttl     = number
+  })
+  description = "TTL settings for the cache policy"
+  default = {
+    min_ttl     = 0
+    default_ttl = 3600    # 1 hour
+    max_ttl     = 86400   # 24 hours
+  }
+}
+
+variable "cookies_behavior" {
+  type        = string
+  description = "Determines whether any cookies in viewer requests are included in the cache key and automatically included in requests that CloudFront sends to the origin"
+  default     = "none"
+}
+
+variable "cookies_to_forward" {
+  type        = list(string)
+  description = "List of cookie names to forward to the origin"
+  default     = []
+}
+
+variable "headers_behavior" {
+  type        = string
+  description = "Determines whether any HTTP headers are included in the cache key and automatically included in requests that CloudFront sends to the origin"
+  default     = "none"
+}
+
+variable "headers_to_forward" {
+  type        = list(string)
+  description = "List of header names to forward to the origin"
+  default     = []
+}
+
+variable "query_strings_behavior" {
+  type        = string
+  description = "Determines whether any URL query strings in viewer requests are included in the cache key and automatically included in requests that CloudFront sends to the origin"
+  default     = "none"
+}
+
+variable "query_strings_to_forward" {
+  type        = list(string)
+  description = "List of query string names to forward to the origin"
+  default     = []
+} 
+=== File: modules/storage/policies/cloudfront/headers/output.tf ===
+
+output "policy_id" {
+  value       = aws_cloudfront_response_headers_policy.security_headers_policy.id
+  description = "ID of the CloudFront response headers policy"
+}
+=== File: modules/storage/policies/cloudfront/headers/main.tf ===
+
+resource "aws_cloudfront_response_headers_policy" "security_headers_policy" {
+  name = var.policy_name
+
+  cors_config {
+    access_control_allow_origins {
+      items = var.cors_config.allowed_origins
+    }
+    access_control_allow_methods {
+      items = var.cors_config.allowed_methods
+    }
+    access_control_allow_headers {
+      items = var.cors_config.allowed_headers
+    }
+    access_control_allow_credentials = var.cors_config.allow_credentials
+    origin_override                  = true
+  }
+
+  dynamic "custom_headers_config" {
+    for_each = var.custom_headers != null ? [1] : []
+    content {
+      items {
+        header   = var.custom_headers.header
+        value    = var.custom_headers.value
+        override = var.custom_headers.override
+      }
+    }
+  }
+}
+=== File: modules/storage/policies/cloudfront/headers/variables.tf ===
+
+variable "policy_name" {
+  type        = string
+  description = "Name of the CloudFront response headers policy"
+}
+
+variable "cors_config" {
+  type = object({
+    allowed_origins     = list(string)
+    allowed_methods     = list(string)
+    allowed_headers     = list(string)
+    allow_credentials   = bool
+  })
+  description = "CORS configuration for the policy"
+  default = {
+    allowed_origins     = ["*"]
+    allowed_methods     = ["GET", "HEAD", "OPTIONS"]
+    allowed_headers     = ["Content-Type", "Authorization", "X-Amz-Date", "X-Api-Key", "X-Amz-Security-Token"]
+    allow_credentials   = true
+  }
+}
+
+variable "custom_headers" {
+  type = object({
+    header   = string
+    value    = string
+    override = bool
+  })
+  description = "Custom headers configuration"
+  default     = null
+} 
+=== File: modules/storage/main.tf ===
+
+locals {
+  bucket_names = {
+    storage = "storage.${var.domain_name}"
+    statics = "statics.${var.domain_name}"
+    dev     = "dev-storage.${var.domain_name}"
+  }
+}
+
+# S3 module for all buckets
+module "s3" {
+  source       = "./s3"
+  domain_name  = var.domain_name
+  environment  = var.environment
+  project_name = var.project_name
+}
+
+# CloudFront distribution for statics bucket
+module "statics_cloudfront" {
+  source              = "./cloudfront"
+  domain_name         = var.domain_name
+  distribution_name   = "StaticsDistribution"
+  environment         = var.environment
+  acm_certificate_arn = var.acm_certificate_arn
+  bucket_id          = module.s3.statics_bucket_id
+  bucket_arn         = module.s3.statics_bucket_arn
+  bucket_domain_name = module.s3.statics_bucket_regional_domain_name
+  aliases            = ["statics.${var.domain_name}"]
+  price_class        = "PriceClass_100"
+  
+  custom_error_responses = [
+    {
+      error_code            = 404
+      response_code         = 200
+      response_page_path    = "/index.html"
+      error_caching_min_ttl = 10
+    }
+  ]
+} 
+=== File: modules/storage/s3/output.tf ===
+
+output "statics_bucket_id" {
+  value       = aws_s3_bucket.statics_bucket.id
+  description = "ID of the statics bucket"
+}
+
+output "statics_bucket_arn" {
+  value       = aws_s3_bucket.statics_bucket.arn
+  description = "ARN of the statics bucket"
+}
+
+output "statics_bucket_regional_domain_name" {
+  value       = aws_s3_bucket.statics_bucket.bucket_regional_domain_name
+  description = "Regional domain name of the statics bucket"
+}
+=== File: modules/storage/s3/main.tf ===
+
+locals {
+  bucket_names = {
+    ecs     = "ecs1.${var.domain_name}"
+    storage = "storage.${var.domain_name}"
+    statics = "statics1.${var.domain_name}"
+    dev     = "dev-storage.${var.domain_name}"
+  }
+
+  common_tags = {
+    Managed_By  = "Terraform"
+    Environment = var.environment
+    Project     = var.project_name
+  }
+}
+
+# Bucket para logs de acceso
+resource "aws_s3_bucket" "access_logs" {
+  bucket = "access-logs.${var.domain_name}"
+  
+  tags = merge(local.common_tags, {
+    Name = "S3 Access Logs Bucket"
+  })
+}
+
+module "access_logs_bucket_policies" {
+  source    = "../policies/s3/bucket"
+  bucket_id = aws_s3_bucket.access_logs.id
+}
+
+# Buckets principales
+resource "aws_s3_bucket" "ecs_bucket" {
+  bucket = local.bucket_names.ecs
+  
+  tags = merge(local.common_tags, {
+    Name = "ECS Bucket"
+  })
+}
+
+resource "aws_s3_bucket" "dev_storage_bucket" {
+  bucket = local.bucket_names.dev
+  
+  tags = merge(local.common_tags, {
+    Name = "Development Storage Bucket"
+  })
+}
+
+resource "aws_s3_bucket" "storage_bucket" {
+  bucket = local.bucket_names.storage
+  
+  tags = merge(local.common_tags, {
+    Name = "Main Storage Bucket"
+  })
+}
+
+resource "aws_s3_bucket" "statics_bucket" {
+  bucket = local.bucket_names.statics
+  
+  tags = merge(local.common_tags, {
+    Name = "Static Assets Bucket"
+  })
+}
+
+# Configuración de logging para todos los buckets
+resource "aws_s3_bucket_logging" "ecs_logging" {
+  bucket = aws_s3_bucket.ecs_bucket.id
+
+  target_bucket = aws_s3_bucket.access_logs.id
+  target_prefix = "ecs/"
+}
+
+resource "aws_s3_bucket_logging" "dev_storage_logging" {
+  bucket = aws_s3_bucket.dev_storage_bucket.id
+
+  target_bucket = aws_s3_bucket.access_logs.id
+  target_prefix = "dev-storage/"
+}
+
+resource "aws_s3_bucket_logging" "storage_logging" {
+  bucket = aws_s3_bucket.storage_bucket.id
+
+  target_bucket = aws_s3_bucket.access_logs.id
+  target_prefix = "storage/"
+}
+
+resource "aws_s3_bucket_logging" "statics_logging" {
+  bucket = aws_s3_bucket.statics_bucket.id
+
+  target_bucket = aws_s3_bucket.access_logs.id
+  target_prefix = "statics/"
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "dev_storage_lifecycle" {
+  bucket = aws_s3_bucket.dev_storage_bucket.id
+
+  rule {
+    id     = "cleanup_old_files"
+    status = "Enabled"
+
+    expiration {
+      days = var.dev_storage_retention_days
+    }
+  }
+}
+
+# CORS para bucket statics
+resource "aws_s3_bucket_cors_configuration" "statics_cors" {
+  bucket = aws_s3_bucket.statics_bucket.id
+
+  cors_rule {
+    allowed_headers = ["*"]
+    allowed_methods = ["GET", "HEAD"]
+    allowed_origins = var.allowed_origins
+    expose_headers  = ["ETag"]
+    max_age_seconds = 3000
+  }
+}
+
+# Políticas básicas para todos los buckets
+module "ecs_bucket_policies" {
+  source    = "../policies/s3/bucket"
+  bucket_id = aws_s3_bucket.ecs_bucket.id
+}
+
+module "dev_storage_bucket_policies" {
+  source    = "../policies/s3/bucket"
+  bucket_id = aws_s3_bucket.dev_storage_bucket.id
+}
+
+module "storage_bucket_policies" {
+  source    = "../policies/s3/bucket"
+  bucket_id = aws_s3_bucket.storage_bucket.id
+}
+
+module "statics_bucket_policies" {
+  source            = "../policies/s3/bucket"
+  bucket_id         = aws_s3_bucket.statics_bucket.id
+  enable_versioning = true  # Habilitamos versionado para archivos estáticos
+}
+
+=== File: modules/storage/s3/variables.tf ===
+
+variable "domain_name" {
+  type        = string
+  description = "The domain name to use for bucket names"
+}
+
+variable "environment" {
+  type        = string
+  description = "Environment name for tagging (e.g., production, staging)"
+}
+
+variable "project_name" {
+  type        = string
+  description = "Project name for tagging"
+}
+
+variable "dev_storage_retention_days" {
+  type        = number
+  description = "Number of days to retain files in the dev storage bucket"
+  default     = 30
+}
+
+variable "allowed_origins" {
+  type        = list(string)
+  description = "List of allowed origins for CORS configuration of the statics bucket"
+  default     = ["*"]
+}
+=== File: modules/storage/variables.tf ===
+
+variable "domain_name" {
+  type        = string
+  description = "The domain name to use for bucket names"
+}
+
+variable "environment" {
+  type        = string
+  description = "Environment name for tagging (e.g., production, staging)"
+}
+
+variable "project_name" {
+  type        = string
+  description = "Project name for tagging"
+}
+
+variable "acm_certificate_arn" {
+  type        = string
+  description = "ARN of the ACM certificate to use for CloudFront distributions"
+} 
+=== File: modules/storage/cloudfront/output.tf ===
+
+output "distribution_id" {
+  value       = aws_cloudfront_distribution.distribution.id
+  description = "ID of the CloudFront distribution"
+}
+
+output "distribution_domain_name" {
+  value       = aws_cloudfront_distribution.distribution.domain_name
+  description = "Domain name of the CloudFront distribution"
+}
+
+output "origin_access_identity_iam_arn" {
+  value       = aws_cloudfront_origin_access_identity.oai.iam_arn
+  description = "IAM ARN of the CloudFront origin access identity"
+}
+=== File: modules/storage/cloudfront/main.tf ===
+
+# CloudFront Origin Access Identity
+resource "aws_cloudfront_origin_access_identity" "oai" {
+  comment = "OAI for ${var.distribution_name}"
+}
+
+# Políticas de CloudFront
+module "cache_policy" {
+  source      = "../policies/cloudfront/cache"
+  policy_name = "${var.distribution_name}CachePolicy"
+}
+
+module "headers_policy" {
+  source      = "../policies/cloudfront/headers"
+  policy_name = "${var.distribution_name}HeadersPolicy"
+}
+
+# Política de acceso de CloudFront a S3
+module "s3_cloudfront_access" {
+  source             = "../policies/s3/cloudfront-access"
+  bucket_id          = var.bucket_id
+  bucket_arn         = var.bucket_arn
+  cloudfront_oai_arn = aws_cloudfront_origin_access_identity.oai.iam_arn
+}
+
+# Distribución CloudFront
+resource "aws_cloudfront_distribution" "distribution" {
+  enabled             = true
+  is_ipv6_enabled     = true
+  comment             = var.distribution_name
+  default_root_object = var.default_root_object
+  price_class         = var.price_class
+  aliases             = var.aliases
+
+  origin {
+    domain_name = var.bucket_domain_name
+    origin_id   = var.bucket_id
+
+    s3_origin_config {
+      origin_access_identity = aws_cloudfront_origin_access_identity.oai.cloudfront_access_identity_path
+    }
+  }
+
+  default_cache_behavior {
+    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
+    cached_methods         = ["GET", "HEAD"]
+    target_origin_id       = var.bucket_id
+    viewer_protocol_policy = "redirect-to-https"
+    compress              = true
+
+    cache_policy_id            = module.cache_policy.policy_id
+    response_headers_policy_id = module.headers_policy.policy_id
+  }
+
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+    }
+  }
+
+  viewer_certificate {
+    acm_certificate_arn      = var.acm_certificate_arn
+    minimum_protocol_version = "TLSv1.2_2021"
+    ssl_support_method       = "sni-only"
+  }
+
+  dynamic "custom_error_response" {
+    for_each = var.custom_error_responses
+    content {
+      error_code            = custom_error_response.value.error_code
+      response_code         = custom_error_response.value.response_code
+      response_page_path    = custom_error_response.value.response_page_path
+      error_caching_min_ttl = custom_error_response.value.error_caching_min_ttl
+    }
+  }
+
+  tags = {
+    Name        = var.distribution_name
+    Environment = var.environment
+    Managed_By  = "Terraform"
+  }
+
+  depends_on = [
+    module.cache_policy,
+    module.headers_policy,
+    module.s3_cloudfront_access
+  ]
+}
+
+=== File: modules/storage/cloudfront/variables.tf ===
+
+variable "distribution_name" {
+  type        = string
+  description = "Name of the CloudFront distribution"
+}
+
+variable "domain_name" {
+  type        = string
+  description = "Domain name for the CloudFront distribution"
+}
+
+variable "bucket_id" {
+  type        = string
+  description = "ID of the S3 bucket to use as origin"
+}
+
+variable "bucket_arn" {
+  type        = string
+  description = "ARN of the S3 bucket to use as origin"
+}
+
+variable "bucket_domain_name" {
+  type        = string
+  description = "Domain name of the S3 bucket to use as origin"
+}
+
+variable "acm_certificate_arn" {
+  type        = string
+  description = "ARN of the ACM certificate to use for the distribution"
+}
+
+variable "default_root_object" {
+  type        = string
+  description = "Object that CloudFront will return when a viewer requests the root URL"
+  default     = "index.html"
+}
+
+variable "price_class" {
+  type        = string
+  description = "Price class for the CloudFront distribution (PriceClass_All, PriceClass_200, PriceClass_100)"
+  default     = "PriceClass_100"
+}
+
+variable "aliases" {
+  type        = list(string)
+  description = "List of alternate domain names for the CloudFront distribution"
+  default     = []
+}
+
+variable "environment" {
+  type        = string
+  description = "Environment name for tagging"
+}
+
+variable "custom_error_responses" {
+  type = list(object({
+    error_code            = number
+    response_code         = number
+    response_page_path    = string
+    error_caching_min_ttl = number
+  }))
+  description = "List of custom error responses"
+  default = [
+    {
+      error_code            = 404
+      response_code         = 200
+      response_page_path    = "/index.html"
+      error_caching_min_ttl = 10
+    }
+  ]
+}
+=== File: modules/secrets-manager/policies/output.tf ===
+
+output "policy_arn" {
+  description = "ARN of the secrets policy"
+  value       = aws_iam_policy.secrets_policy.arn
+}
+=== File: modules/secrets-manager/policies/main.tf ===
+
+resource "aws_iam_policy" "secrets_policy" {
+  name        = "secrets-policy"
+  description = "A policy to allow reading secrets from Secret Manager"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Effect   = "Allow"
+        Resource = values(var.secret_arns)
+      },
+    ]
+  })
+}
+=== File: modules/secrets-manager/policies/variables.tf ===
+
+variable "secret_arns" {
+  description = "Map of secret ARNs that this policy will have access to"
+  type        = map(string)
+} 
+=== File: modules/secrets-manager/output.tf ===
+
+output "secret_arns" {
+  description = "Map of ARNs of the created secrets"
+  value = {
+    for k, v in aws_secretsmanager_secret.secrets : k => v.arn
+  }
+}
+
+output "secret_ids" {
+  description = "Map of IDs of the created secrets"
+  value = {
+    for k, v in aws_secretsmanager_secret.secrets : k => v.id
+  }
+}
+
+output "secrets_policy_arn" {
+  description = "IAM policy ARN to access the secrets"
+  value       = module.policies.policy_arn
+}
+
+=== File: modules/secrets-manager/main.tf ===
+
+resource "aws_secretsmanager_secret" "secrets" {
+  for_each = var.secrets
+  name     = each.value.name
+
+  tags = {
+    Name        = each.value.name
+    Environment = "production"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "secret_values" {
+  for_each = var.secrets
+
+  secret_id     = aws_secretsmanager_secret.secrets[each.key].id
+  secret_string = jsonencode(each.value.values)
+}
+
+module "policies" {
+  source      = "./policies"
+  secret_arns = { for k, v in aws_secretsmanager_secret.secrets : k => v.arn }
+}
+
+=== File: modules/secrets-manager/variables.tf ===
+
+variable "secrets" {
+  description = "Mapa de secretos a crear. Cada secreto debe tener un nombre y sus valores"
+  type = map(object({
+    name   = string
+    values = map(string)
+  }))
+}
+
+=== File: modules/eks/output.tf ===
+
+# Outputs que exponen la información necesaria del cluster
+output "cluster_endpoint" {
+  description = "Endpoint for EKS control plane"
+  value       = module.cluster.cluster_endpoint
+}
+
+output "cluster_name" {
+  description = "Name of the EKS cluster"
+  value       = module.cluster.cluster_name
+}
+
+output "cluster_certificate_authority_data" {
+  description = "Base64 encoded certificate data required to communicate with the cluster"
+  value       = module.cluster.cluster_certificate_authority_data
+}
+
+output "cluster_oidc_issuer_url" {
+  description = "The URL on the EKS cluster for the OpenID Connect identity provider"
+  value       = module.cluster.cluster_oidc_issuer_url
+}
+
+=== File: modules/eks/cluster/output.tf ===
+
+output "cluster_endpoint" {
+  description = "Endpoint for EKS control plane"
+  value       = module.eks.cluster_endpoint
+}
+
+output "cluster_name" {
+  description = "Name of the EKS cluster"
+  value       = module.eks.cluster_name
+}
+
+output "cluster_certificate_authority_data" {
+  description = "Base64 encoded certificate data required to communicate with the cluster"
+  value       = module.eks.cluster_certificate_authority_data
+}
+
+output "cluster_oidc_issuer_url" {
+  description = "The URL on the EKS cluster for the OpenID Connect identity provider"
+  value       = module.eks.cluster_oidc_issuer_url
+}
+
+output "cluster_security_group_id" {
+  description = "ID of the security group for the EKS cluster"
+  value       = aws_security_group.eks_cluster.id
+}
+
+output "nodes_security_group_id" {
+  description = "ID of the security group for the EKS worker nodes"
+  value       = aws_security_group.eks_nodes.id
+}
+
+output "cluster_version" {
+  description = "The Kubernetes version of the cluster"
+  value       = module.eks.cluster_version
+}
+
+output "cluster_status" {
+  description = "Status of the EKS cluster"
+  value       = module.eks.cluster_status
+}
+
+output "cluster_addons" {
+  description = "Status of EKS cluster addons"
+  value       = module.eks.cluster_addons
+}
+
+output "node_groups" {
+  description = "Status and information about EKS managed node groups"
+  value       = module.eks.eks_managed_node_groups
+}
+
+output "cluster_logging" {
+  description = "Enabled logging components in the cluster"
+  value       = var.cluster_logging
+}
+
+=== File: modules/eks/cluster/main.tf ===
+
+data "aws_iam_user" "terraform" {
+  user_name = "terraform"
+}
+
+# Cluster EKS
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "20.33.1"
+
+  cluster_name    = var.cluster_name
+  cluster_version = var.cluster_version
+
+  vpc_id     = var.vpc_id
+  subnet_ids = var.subnet_ids
+
+  # Control plane
+  cluster_endpoint_public_access = true
+
+  # Logging configuration
+  cluster_enabled_log_types = [
+    var.cluster_logging.api ? "api" : null,
+    var.cluster_logging.audit ? "audit" : null,
+    var.cluster_logging.authenticator ? "authenticator" : null,
+    var.cluster_logging.controllerManager ? "controllerManager" : null,
+    var.cluster_logging.scheduler ? "scheduler" : null,
+  ]
+
+  # AWS Auth configuration
+  authentication_mode = var.authentication_mode
+  access_entries = {
+    terraform_user = {
+      kubernetes_groups = var.terraform_user_kubernetes_groups
+      principal_arn     = data.aws_iam_user.terraform.arn
+      type              = "STANDARD"
+    }
+  }
+
+  # IAM Roles
+  create_iam_role = false
+  iam_role_arn    = var.cluster_role_arn
+
+  # Node groups configuration
+  eks_managed_node_groups = {
+    for name, config in var.node_groups : name => merge({
+      min_size       = config.min_size
+      max_size       = config.max_size
+      desired_size   = config.desired_size != null ? config.desired_size : config.min_size
+      instance_types = [config.instance_type]
+      capacity_type  = config.capacity_type
+
+      iam_role_arn = var.nodes_role_arn
+
+      labels = merge({
+        Environment = var.environment
+        ManagedBy   = "terraform"
+        OS          = "linux"
+        Arch        = "amd64"
+      }, config.labels)
+
+      taints = config.taints
+
+      tags = {
+        "k8s.io/cluster-autoscaler/enabled"             = "true"
+        "k8s.io/cluster-autoscaler/${var.cluster_name}" = "owned"
+        Environment                                     = var.environment
+        ManagedBy                                       = "terraform"
+      }
+
+      update_config = {
+        max_unavailable_percentage = var.node_group_update_max_unavailable_percentage
+      }
+
+      # Configuración del disco
+      block_device_mappings = {
+        xvda = {
+          device_name = "/dev/xvda"
+          ebs = {
+            volume_size = try(config.storage_config.volume_size, 50)
+            volume_type = try(config.storage_config.volume_type, "gp3")
+            encrypted   = try(config.storage_config.encrypted, true)
+          }
+        }
+      }
+
+      # Kubelet configuration
+      kubelet_config = {
+        container_log_max_size  = try(config.kubelet_config.container_log_max_size, "10Mi")
+        container_log_max_files = try(config.kubelet_config.container_log_max_files, 5)
+        cpu_cfs_quota_enabled   = try(config.kubelet_config.cpu_cfs_quota_enabled, true)
+        max_pods                = try(config.kubelet_config.max_pods, 70)
+        system_reserved = try(config.kubelet_config.system_reserved, {
+          cpu    = "100m"
+          memory = "100Mi"
+        })
+      }
+
+      # Launch template configuration
+      create_launch_template      = true
+      launch_template_name        = try(config.launch_template.name, null)
+      launch_template_description = try(config.launch_template.description, "Launch template for ${var.cluster_name} - ${name}")
+      ebs_optimized               = try(config.launch_template.ebs_optimized, true)
+      monitoring_enabled          = try(config.launch_template.monitoring_enabled, true)
+      metadata_options = {
+        http_endpoint               = "enabled"
+        http_tokens                 = try(config.launch_template.metadata_http_tokens, "required")
+        http_put_response_hop_limit = try(config.launch_template.metadata_http_put_hop_limit, 2)
+      }
+
+      # Lifecycle policy
+      create_before_destroy = true
+    })
+  }
+
+  # Add-ons
+  cluster_addons = merge(
+    var.enable_addons.coredns ? {
+      coredns = {
+        most_recent = true
+        preserve    = true
+        configuration_values = jsonencode({
+          computeType = var.coredns_compute_type
+          resources   = var.coredns_resources
+        })
+      }
+    } : {},
+    var.enable_addons.kube_proxy ? {
+      kube-proxy = {
+        most_recent = true
+        preserve    = true
+      }
+    } : {},
+    var.enable_addons.vpc_cni ? {
+      vpc-cni = {
+        most_recent = true
+        preserve    = true
+        configuration_values = jsonencode({
+          env = {
+            ENABLE_PREFIX_DELEGATION = tostring(var.vpc_cni_config.enable_prefix_delegation)
+            WARM_PREFIX_TARGET       = var.vpc_cni_config.warm_prefix_target
+            ENABLE_POD_ENI           = tostring(var.vpc_cni_config.enable_pod_eni)
+          }
+        })
+      }
+    } : {},
+    var.enable_addons.efs_csi ? {
+      aws-efs-csi-driver = {
+        most_recent = var.efs_csi_config.version == "latest"
+        version     = var.efs_csi_config.version != "latest" ? var.efs_csi_config.version : null
+        preserve    = true
+        configuration_values = jsonencode({
+          controller = {
+            resources    = var.efs_csi_config.controller.resources
+            replicaCount = var.efs_csi_config.controller.replica_count
+          }
+        })
+        service_account_role_arn = var.efs_csi_role_arn
+      }
+    } : {},
+    var.enable_addons.secrets_store_csi ? {
+      secrets-store-csi-driver = {
+        most_recent = var.secrets_store_csi_config.version == "latest"
+        version     = var.secrets_store_csi_config.version != "latest" ? var.secrets_store_csi_config.version : null
+        preserve    = true
+        configuration_values = jsonencode({
+          controller = {
+            resources    = var.secrets_store_csi_config.controller.resources
+            replicaCount = var.secrets_store_csi_config.controller.replica_count
+          }
+          node = {
+            resources = var.secrets_store_csi_config.node.resources
+          }
+          rotationPollInterval = var.secrets_store_csi_config.rotation_poll_interval
+          enableRotation       = var.secrets_store_csi_config.enable_rotation
+          providerInstall      = var.secrets_store_csi_config.provider_install
+        })
+      }
+    } : {}
+  )
+
+  # Enable IRSA for CSI Drivers if any is enabled
+  enable_irsa = var.enable_addons.efs_csi || var.enable_addons.secrets_store_csi
+
+  # Tags
+  tags = {
+    Environment                                 = var.environment
+    ManagedBy                                   = "terraform"
+    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
+    KubernetesVersion                           = var.cluster_version
+  }
+}
+
+# Security Groups
+resource "aws_security_group" "eks_cluster" {
+  name        = "${var.cluster_name}-cluster"
+  description = "Security group for EKS cluster control plane"
+  vpc_id      = var.vpc_id
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name                                        = "${var.cluster_name}-cluster"
+    Environment                                 = var.environment
+    ManagedBy                                   = "terraform"
+    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_security_group_rule" "cluster_ingress" {
+  description              = "Allow worker nodes to communicate with the cluster API Server"
+  from_port                = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_cluster.id
+  source_security_group_id = aws_security_group.eks_nodes.id
+  to_port                  = 443
+  type                     = "ingress"
+}
+
+resource "aws_security_group" "eks_nodes" {
+  name        = "${var.cluster_name}-nodes"
+  description = "Security group for EKS worker nodes"
+  vpc_id      = var.vpc_id
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name                                        = "${var.cluster_name}-nodes"
+    Environment                                 = var.environment
+    ManagedBy                                   = "terraform"
+    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
+  }
+}
+
+resource "aws_security_group_rule" "nodes_internal" {
+  description              = "Allow nodes to communicate with each other"
+  from_port                = 0
+  protocol                 = "-1"
+  security_group_id        = aws_security_group.eks_nodes.id
+  source_security_group_id = aws_security_group.eks_nodes.id
+  to_port                  = 65535
+  type                     = "ingress"
+}
+
+resource "aws_security_group_rule" "nodes_cluster_inbound" {
+  description              = "Allow worker Kubelets and pods to receive communication from the cluster control plane"
+  from_port                = 1025
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_nodes.id
+  source_security_group_id = aws_security_group.eks_cluster.id
+  to_port                  = 65535
+  type                     = "ingress"
+}
+
+=== File: modules/eks/cluster/variables.tf ===
+
+variable "cluster_name" {
+  description = "Name of the EKS cluster"
+  type        = string
+}
+
+variable "cluster_version" {
+  description = "Kubernetes version to use for the EKS cluster"
+  type        = string
+  default     = "1.32"
+  validation {
+    condition     = can(regex("^1\\.(3[0-2])$", var.cluster_version))
+    error_message = "Cluster version must be between 1.30 and 1.32"
+  }
+}
+
+variable "vpc_id" {
+  description = "ID of the VPC where the cluster will be created"
+  type        = string
+}
+
+variable "subnet_ids" {
+  description = "List of subnet IDs where the cluster will be created"
+  type        = list(string)
+}
+
+variable "environment" {
+  description = "Environment name (e.g., production, staging)"
+  type        = string
+}
+
+variable "cluster_role_arn" {
+  description = "ARN of the IAM role for the EKS cluster"
+  type        = string
+}
+
+variable "nodes_role_arn" {
+  description = "ARN of the IAM role for the EKS worker nodes"
+  type        = string
+}
+
+variable "node_groups" {
+  description = "Configuration for EKS managed node groups"
+  type = map(object({
+    instance_type = string
+    min_size      = number
+    max_size      = number
+    desired_size  = optional(number)
+    capacity_type = optional(string, "SPOT")
+    labels        = optional(map(string), {})
+    taints = optional(list(object({
+      key    = string
+      value  = string
+      effect = string
+    })), [])
+    storage_config = optional(object({
+      volume_size = optional(number, 50)
+      volume_type = optional(string, "gp3")
+      encrypted   = optional(bool, true)
+    }), {})
+    kubelet_config = optional(object({
+      container_log_max_size  = optional(string, "10Mi")
+      container_log_max_files = optional(number, 5)
+      cpu_cfs_quota_enabled   = optional(bool, true)
+      max_pods                = optional(number, 70)
+      system_reserved = optional(object({
+        cpu    = optional(string, "100m")
+        memory = optional(string, "100Mi")
+      }), {})
+    }), {})
+    launch_template = optional(object({
+      name                        = optional(string)
+      description                 = optional(string)
+      ebs_optimized               = optional(bool, true)
+      monitoring_enabled          = optional(bool, true)
+      enable_imdsv2               = optional(bool, true)
+      metadata_http_tokens        = optional(string, "required")
+      metadata_http_put_hop_limit = optional(number, 2)
+    }), {})
+  }))
+}
+
+variable "node_group_update_max_unavailable_percentage" {
+  description = "Maximum percentage of nodes that can be unavailable during node group updates"
+  type        = number
+  default     = 33
+  validation {
+    condition     = var.node_group_update_max_unavailable_percentage >= 0 && var.node_group_update_max_unavailable_percentage <= 100
+    error_message = "The max unavailable percentage must be between 0 and 100"
+  }
+}
+
+variable "terraform_user_kubernetes_groups" {
+  description = "List of Kubernetes groups to assign to the terraform user"
+  type        = list(string)
+  default     = ["cluster-admin"]
+}
+
+variable "authentication_mode" {
+  description = "Authentication mode for the EKS cluster"
+  type        = string
+  default     = "API_AND_CONFIG_MAP"
+}
+
+variable "coredns_compute_type" {
+  description = "Compute type for CoreDNS addon (e.g., EC2, Fargate)"
+  type        = string
+  default     = "EC2"
+}
+
+variable "coredns_resources" {
+  description = "Resource limits and requests for CoreDNS addon"
+  type = object({
+    limits = object({
+      cpu    = string
+      memory = string
+    })
+    requests = object({
+      cpu    = string
+      memory = string
+    })
+  })
+  default = {
+    limits = {
+      cpu    = "250m"
+      memory = "256Mi"
+    }
+    requests = {
+      cpu    = "100m"
+      memory = "128Mi"
+    }
+  }
+}
+
+variable "vpc_cni_config" {
+  description = "Configuration options for VPC CNI addon"
+  type = object({
+    enable_prefix_delegation = optional(bool, true)
+    warm_prefix_target       = optional(string, "1")
+    enable_pod_eni           = optional(bool, true)
+  })
+  default = {
+    enable_prefix_delegation = true
+    warm_prefix_target       = "1"
+    enable_pod_eni           = true
+  }
+}
+
+variable "enable_addons" {
+  description = "Feature flags to enable/disable EKS addons"
+  type = object({
+    coredns           = optional(bool, true)
+    kube_proxy        = optional(bool, true)
+    vpc_cni           = optional(bool, true)
+    efs_csi           = optional(bool, true)
+    secrets_store_csi = optional(bool, true)
+  })
+  default = {
+    coredns           = true
+    kube_proxy        = true
+    vpc_cni           = true
+    efs_csi           = true
+    secrets_store_csi = true
+  }
+}
+
+variable "efs_csi_config" {
+  description = "Configuration for EFS CSI driver addon"
+  type = object({
+    version = optional(string, "latest")
+    controller = optional(object({
+      resources = optional(object({
+        limits = optional(object({
+          cpu    = optional(string, "100m")
+          memory = optional(string, "128Mi")
+        }), {})
+        requests = optional(object({
+          cpu    = optional(string, "100m")
+          memory = optional(string, "128Mi")
+        }), {})
+      }), {})
+      replica_count = optional(number, 2)
+    }), {})
+  })
+  default = {
+    version = "latest"
+    controller = {
+      resources = {
+        limits = {
+          cpu    = "100m"
+          memory = "128Mi"
+        }
+        requests = {
+          cpu    = "100m"
+          memory = "128Mi"
+        }
+      }
+      replica_count = 2
+    }
+  }
+}
+
+variable "secrets_store_csi_config" {
+  description = "Configuration for Secrets Store CSI driver addon"
+  type = object({
+    version = optional(string, "v1.3.4")
+    controller = optional(object({
+      resources = optional(object({
+        limits = optional(object({
+          cpu    = optional(string, "100m")
+          memory = optional(string, "128Mi")
+        }), {})
+        requests = optional(object({
+          cpu    = optional(string, "50m")
+          memory = optional(string, "64Mi")
+        }), {})
+      }), {})
+      replica_count = optional(number, 2)
+    }), {})
+    node = optional(object({
+      resources = optional(object({
+        limits = optional(object({
+          cpu    = optional(string, "100m")
+          memory = optional(string, "128Mi")
+        }), {})
+        requests = optional(object({
+          cpu    = optional(string, "50m")
+          memory = optional(string, "64Mi")
+        }), {})
+      }), {})
+    }), {})
+    rotation_poll_interval = optional(string, "2m")
+    enable_rotation        = optional(bool, true)
+    provider_install       = optional(bool, true)
+  })
+  default = {
+    version = "v1.3.4"
+    controller = {
+      resources = {
+        limits = {
+          cpu    = "100m"
+          memory = "128Mi"
+        }
+        requests = {
+          cpu    = "50m"
+          memory = "64Mi"
+        }
+      }
+      replica_count = 2
+    }
+    node = {
+      resources = {
+        limits = {
+          cpu    = "100m"
+          memory = "128Mi"
+        }
+        requests = {
+          cpu    = "50m"
+          memory = "64Mi"
+        }
+      }
+    }
+    rotation_poll_interval = "2m"
+    enable_rotation        = true
+    provider_install       = true
+  }
+}
+
+variable "cluster_logging" {
+  description = "Enable/disable control plane logging components"
+  type = object({
+    api               = bool
+    audit             = bool
+    authenticator     = bool
+    controllerManager = bool
+    scheduler         = bool
+  })
+  default = {
+    api               = true
+    audit             = true
+    authenticator     = true
+    controllerManager = true
+    scheduler         = true
+  }
+}
+
+variable "create_iam_role" {
+  description = "Whether to create the IAM role for the EKS cluster"
+  type        = bool
+  default     = true
+}
+
+variable "efs_csi_role_arn" {
+  description = "ARN of the IAM role for the EFS CSI driver"
+  type        = string
+}
+
+variable "aws_account_id" {
+  description = "AWS account ID"
+  type        = string
+}
+
+=== File: modules/eks/main.tf ===
+
+data "aws_caller_identity" "current" {}
+
+# Módulo de IAM
+module "iam" {
+  source = "./iam"
+
+  environment             = var.environment
+  cluster_name            = var.cluster_name
+  cluster_oidc_issuer_url = module.cluster.cluster_oidc_issuer_url
+  aws_account_id          = data.aws_caller_identity.current.account_id
+}
+
+# Módulo principal de EKS que orquesta los submódulos
+module "cluster" {
+  source = "./cluster"
+
+  vpc_id           = var.vpc_id
+  node_groups      = var.node_groups
+  environment      = var.environment
+  cluster_name     = var.cluster_name
+  cluster_version  = var.cluster_version
+  nodes_role_arn   = module.iam.nodes_role_arn
+  cluster_role_arn = module.iam.cluster_role_arn
+  efs_csi_role_arn = module.iam.efs_csi_role_arn
+  subnet_ids       = [var.vpc_subnet.id_a, var.vpc_subnet.id_b]
+  aws_account_id   = data.aws_caller_identity.current.account_id
+
+  enable_addons = {
+    coredns           = true
+    kube_proxy        = true
+    vpc_cni           = true
+    efs_csi           = true
+    secrets_store_csi = false
+  }
+}
+
+=== File: modules/eks/nlb.tf ===
+
+resource "aws_lb" "cluster_nlb" {
+  name                             = "${var.environment}-${substr(var.cluster_name, 0, 12)}-nlb"
+  internal                         = false
+  load_balancer_type               = "network"
+  subnets                          = [var.vpc_subnet.id_a, var.vpc_subnet.id_b]
+  enable_cross_zone_load_balancing = true
+
+  tags = {
+    Environment = var.environment
+    Cluster     = var.cluster_name
+    Terraform   = "true"
+  }
+}
+
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.cluster_nlb.arn
+  port              = 80
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.traefik.arn
+  }
+}
+
+resource "aws_lb_listener" "https" {
+  load_balancer_arn = aws_lb.cluster_nlb.arn
+  port              = 443
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.traefik.arn
+  }
+}
+
+resource "aws_lb_target_group" "traefik" {
+  name        = "${var.environment}-${substr(var.cluster_name, 0, 12)}-trf"
+  port        = 80
+  protocol    = "TCP"
+  vpc_id      = var.vpc_id
+  target_type = "ip"
+
+  health_check {
+    enabled             = true
+    protocol            = "TCP"
+    healthy_threshold   = 3
+    unhealthy_threshold = 3
+    interval            = 30
+  }
+
+  tags = {
+    Environment = var.environment
+    Cluster     = var.cluster_name
+    Terraform   = "true"
+  }
+}
+
+output "nlb_dns_name" {
+  description = "The DNS name of the Network Load Balancer"
+  value       = aws_lb.cluster_nlb.dns_name
+}
+
+output "nlb_arn" {
+  description = "The ARN of the Network Load Balancer"
+  value       = aws_lb.cluster_nlb.arn
+}
+
+output "target_group_arn" {
+  description = "The ARN of the Target Group for Traefik"
+  value       = aws_lb_target_group.traefik.arn
+}
+
+=== File: modules/eks/storage.tf ===
+
+# EFS File System
+resource "aws_efs_file_system" "cluster_storage" {
+  creation_token = "${var.cluster_name}-storage-efs"
+  encrypted      = true
+
+  tags = {
+    Name        = "${var.cluster_name}-storage-efs"
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
+}
+
+# Security Group para EFS
+resource "aws_security_group" "efs" {
+  name        = "${var.cluster_name}-storage-efs-sg"
+  description = "Security group for EFS mount targets"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    description = "NFS from EKS"
+    from_port   = 2049
+    to_port     = 2049
+    protocol    = "tcp"
+    cidr_blocks = [data.aws_vpc.selected.cidr_block]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name        = "${var.cluster_name}-storage-efs-sg"
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
+}
+
+# Data source para obtener información de la VPC
+data "aws_vpc" "selected" {
+  id = var.vpc_id
+}
+
+# Mount targets para EFS
+resource "aws_efs_mount_target" "zone_a" {
+  file_system_id  = aws_efs_file_system.cluster_storage.id
+  subnet_id       = var.vpc_subnet.id_a
+  security_groups = [aws_security_group.efs.id]
+}
+
+resource "aws_efs_mount_target" "zone_b" {
+  file_system_id  = aws_efs_file_system.cluster_storage.id
+  subnet_id       = var.vpc_subnet.id_b
+  security_groups = [aws_security_group.efs.id]
+}
+
+output "efs_id" {
+  value = aws_efs_file_system.cluster_storage.id
+}
+
+output "efs_dns_name" {
+  value = aws_efs_file_system.cluster_storage.dns_name
+} 
+=== File: modules/eks/iam/efs_csi.tf ===
+
+# IAM Role para el EFS CSI Driver
+resource "aws_iam_role" "efs_csi_driver" {
+  name = "${var.cluster_name}-efs-csi-driver"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = "arn:aws:iam::${var.aws_account_id}:oidc-provider/${replace(var.cluster_oidc_issuer_url, "https://", "")}"
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "${replace(var.cluster_oidc_issuer_url, "https://", "")}:sub" : "system:serviceaccount:kube-system:efs-csi-controller-sa"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.cluster_name}-efs-csi-driver"
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
+}
+
+# Política para el EFS CSI Driver
+resource "aws_iam_role_policy_attachment" "efs_csi_driver" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
+  role       = aws_iam_role.efs_csi_driver.name
+}
+
+=== File: modules/eks/iam/main.tf ===
+
+# Rol para el cluster EKS
+resource "aws_iam_role" "eks_cluster" {
+  name = "${var.cluster_name}-cluster-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "eks.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.cluster_name}-cluster-role"
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
+}
+
+# Políticas necesarias para el cluster
+resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+  role       = aws_iam_role.eks_cluster.name
+}
+
+# Rol para los nodos
+resource "aws_iam_role" "eks_nodes" {
+  name = "${var.cluster_name}-node-group-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.cluster_name}-node-group-role"
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
+}
+
+# Políticas necesarias para los nodos
+resource "aws_iam_role_policy_attachment" "eks_worker_node_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+  role       = aws_iam_role.eks_nodes.name
+}
+
+resource "aws_iam_role_policy_attachment" "eks_cni_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+  role       = aws_iam_role.eks_nodes.name
+}
+
+resource "aws_iam_role_policy_attachment" "eks_container_registry" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+  role       = aws_iam_role.eks_nodes.name
+}
+
+# Política para acceso a EFS desde los nodos
+resource "aws_iam_role_policy_attachment" "eks_efs_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
+  role       = aws_iam_role.eks_nodes.name
+}
+
+=== File: modules/eks/iam/outputs.tf ===
+
+# Outputs para roles principales
+output "cluster_role_arn" {
+  description = "ARN of the IAM role for the EKS cluster"
+  value       = aws_iam_role.eks_cluster.arn
+}
+
+output "nodes_role_arn" {
+  description = "ARN of the IAM role for the EKS worker nodes"
+  value       = aws_iam_role.eks_nodes.arn
+}
+
+# Outputs para roles de administración
+output "admin_role_arn" {
+  description = "ARN of the IAM role for Kubernetes administrators"
+  value       = aws_iam_role.eks_admin.arn
+}
+
+output "viewer_access_key" {
+  description = "Access key for the Kubernetes viewer user"
+  value       = aws_iam_access_key.k8s_viewer_key.id
+  sensitive   = true
+}
+
+# Outputs para roles de servicios
+output "cluster_autoscaler_role_arn" {
+  description = "ARN of the IAM role for Cluster Autoscaler"
+  value       = aws_iam_role.cluster_autoscaler.arn
+}
+
+output "efs_csi_role_arn" {
+  description = "ARN of the IAM role for EFS CSI driver"
+  value       = aws_iam_role.efs_csi_driver.arn
+}
+
+output "secret_manager_efs_role_arn" {
+  description = "ARN of the IAM role for Secret Manager and EFS access"
+  value       = aws_iam_role.secret_manager_efs.arn
+}
+
+output "load_balancer_controller_role_arn" {
+  description = "ARN of the IAM role for AWS Load Balancer Controller"
+  value       = aws_iam_role.aws_load_balancer_controller.arn
+}
+
+=== File: modules/eks/iam/cluster_autoscaler.tf ===
+
+# Rol para el Cluster Autoscaler
+resource "aws_iam_role" "cluster_autoscaler" {
+  name = "${var.cluster_name}-cluster-autoscaler"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = "arn:aws:iam::${var.aws_account_id}:oidc-provider/${replace(var.cluster_oidc_issuer_url, "https://", "")}"
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "${replace(var.cluster_oidc_issuer_url, "https://", "")}:sub" : "system:serviceaccount:kube-system:cluster-autoscaler"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.cluster_name}-cluster-autoscaler"
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
+}
+
+# Política para el Cluster Autoscaler
+resource "aws_iam_policy" "cluster_autoscaler" {
+  name        = "${var.cluster_name}-cluster-autoscaler"
+  description = "Policy for Cluster Autoscaler"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:DescribeAutoScalingInstances",
+          "autoscaling:DescribeLaunchConfigurations",
+          "autoscaling:DescribeTags",
+          "autoscaling:SetDesiredCapacity",
+          "autoscaling:TerminateInstanceInAutoScalingGroup",
+          "ec2:DescribeLaunchTemplateVersions",
+          "ec2:DescribeInstanceTypes"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "cluster_autoscaler" {
+  policy_arn = aws_iam_policy.cluster_autoscaler.arn
+  role       = aws_iam_role.cluster_autoscaler.name
+}
+
+=== File: modules/eks/iam/load_balancer_controller_role.tf ===
+
+# IAM Role para el AWS Load Balancer Controller
+resource "aws_iam_role" "aws_load_balancer_controller" {
+  name = "${var.cluster_name}-aws-load-balancer-controller"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = "arn:aws:iam::${var.aws_account_id}:oidc-provider/${replace(var.cluster_oidc_issuer_url, "https://", "")}"
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "${replace(var.cluster_oidc_issuer_url, "https://", "")}:sub" : "system:serviceaccount:aws-load-balancer-controller:aws-load-balancer-controller"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.cluster_name}-aws-load-balancer-controller"
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
+}
+
+# Política personalizada para el AWS Load Balancer Controller
+resource "aws_iam_policy" "aws_load_balancer_controller" {
+  name        = "${var.cluster_name}-aws-load-balancer-controller"
+  description = "Policy for AWS Load Balancer Controller"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "iam:CreateServiceLinkedRole"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "iam:AWSServiceName" : "elasticloadbalancing.amazonaws.com"
+          }
+        }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:GetSecurityGroupsForVpc",
+          "ec2:CreateSecurityGroup",
+          "ec2:DeleteSecurityGroup",
+          "ec2:AuthorizeSecurityGroupIngress",
+          "ec2:RevokeSecurityGroupIngress",
+          "ec2:AuthorizeSecurityGroupEgress",
+          "ec2:RevokeSecurityGroupEgress",
+          "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
+          "ec2:UpdateSecurityGroupRuleDescriptionsEgress",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeSecurityGroupRules",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeInstances",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DescribeAccountAttributes",
+          "ec2:DescribeAddresses",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeInternetGateways",
+          "ec2:DescribeVpcPeeringConnections",
+          "ec2:DescribeCoipPools",
+          "ec2:GetCoipPoolUsage",
+          "ec2:DescribeTags",
+          "ec2:CreateTags",
+          "ec2:DeleteTags",
+          "ec2:ModifySecurityGroupRules",
+          "ec2:ModifyNetworkInterfaceAttribute"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "elasticloadbalancing:CreateLoadBalancer",
+          "elasticloadbalancing:DeleteLoadBalancer",
+          "elasticloadbalancing:DescribeLoadBalancers",
+          "elasticloadbalancing:ModifyLoadBalancerAttributes",
+          "elasticloadbalancing:CreateListener",
+          "elasticloadbalancing:DeleteListener",
+          "elasticloadbalancing:DescribeListeners",
+          "elasticloadbalancing:CreateTargetGroup",
+          "elasticloadbalancing:DeleteTargetGroup",
+          "elasticloadbalancing:DescribeTargetGroups",
+          "elasticloadbalancing:ModifyTargetGroup",
+          "elasticloadbalancing:RegisterTargets",
+          "elasticloadbalancing:DeregisterTargets",
+          "elasticloadbalancing:DescribeTargetHealth",
+          "elasticloadbalancing:AddTags",
+          "elasticloadbalancing:RemoveTags",
+          "elasticloadbalancing:CreateRule",
+          "elasticloadbalancing:DeleteRule",
+          "elasticloadbalancing:DescribeLoadBalancerAttributes",
+          "elasticloadbalancing:DescribeTargetGroupAttributes",
+          "elasticloadbalancing:DescribeListenerCertificates",
+          "elasticloadbalancing:DescribeSSLPolicies",
+          "elasticloadbalancing:DescribeRules",
+          "elasticloadbalancing:DescribeTags",
+          "elasticloadbalancing:ModifyTargetGroupAttributes",
+          "elasticloadbalancing:ModifyListener",
+          "elasticloadbalancing:ModifyRule",
+          "elasticloadbalancing:SetIpAddressType",
+          "elasticloadbalancing:SetSecurityGroups",
+          "elasticloadbalancing:SetSubnets",
+          "elasticloadbalancing:SetWebAcl"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:DescribeUserPoolClient",
+          "acm:ListCertificates",
+          "acm:DescribeCertificate",
+          "iam:ListServerCertificates",
+          "iam:GetServerCertificate",
+          "waf-regional:GetWebACL",
+          "waf-regional:GetWebACLForResource",
+          "waf-regional:AssociateWebACL",
+          "waf-regional:DisassociateWebACL",
+          "wafv2:GetWebACL",
+          "wafv2:GetWebACLForResource",
+          "wafv2:AssociateWebACL",
+          "wafv2:DisassociateWebACL",
+          "shield:GetSubscriptionState",
+          "shield:DescribeProtection",
+          "shield:CreateProtection",
+          "shield:DeleteProtection"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# Attachment de la política al rol
+resource "aws_iam_role_policy_attachment" "aws_load_balancer_controller" {
+  policy_arn = aws_iam_policy.aws_load_balancer_controller.arn
+  role       = aws_iam_role.aws_load_balancer_controller.name
+}
+
+=== File: modules/eks/iam/admin_roles.tf ===
+
+# Rol para administradores de Kubernetes
+resource "aws_iam_role" "eks_admin" {
+  name = "${var.cluster_name}-k8s-admin-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          AWS = [
+            "arn:aws:iam::${var.aws_account_id}:user/terraform",
+            "arn:aws:iam::${var.aws_account_id}:role/${var.cluster_name}-k8s-admin-role",
+          ]
+          Service = ["eks.amazonaws.com"]
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.cluster_name}-k8s-admin-role"
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
+}
+
+# Política para permitir acceso administrativo a EKS
+resource "aws_iam_role_policy" "eks_admin" {
+  name = "${var.cluster_name}-k8s-admin-policy"
+  role = aws_iam_role.eks_admin.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "eks:*",
+          "ec2:DescribeInstances",
+          "ec2:DescribeRouteTables",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeVolumes",
+          "ec2:DescribeVolumesModifications",
+          "ec2:DescribeVpcs",
+          "iam:ListRoles",
+          "iam:GetRole",
+          "iam:CreateRole",
+          "iam:DeleteRole",
+          "iam:AttachRolePolicy",
+          "iam:DetachRolePolicy",
+          "iam:PutRolePolicy",
+          "iam:DeleteRolePolicy",
+          "iam:PassRole",
+          "sts:AssumeRole",
+          "sts:GetCallerIdentity"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# Política para permitir que el usuario terraform asuma el rol de administrador
+resource "aws_iam_user_policy" "terraform_assume_admin" {
+  name = "terraform-assume-k8s-admin"
+  user = "terraform"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sts:AssumeRole",
+          "sts:GetCallerIdentity",
+          "iam:GetRole"
+        ]
+        Resource = aws_iam_role.eks_admin.arn
+      }
+    ]
+  })
+}
+
+=== File: modules/eks/iam/viewer_roles.tf ===
+
+# Usuario para visualización de Kubernetes
+resource "aws_iam_user" "k8s_viewer" {
+  name = "k8s-viewer"
+
+  tags = {
+    Environment = var.environment
+    Role        = "kubernetes-readonly"
+  }
+}
+
+resource "aws_iam_access_key" "k8s_viewer_key" {
+  user = aws_iam_user.k8s_viewer.name
+}
+
+# Política de solo lectura para EKS
+resource "aws_iam_policy" "eks_read_only" {
+  name        = "${var.cluster_name}-eks-read-only"
+  description = "Permisos de solo lectura para consultar recursos de EKS"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "eks:DescribeCluster",
+          "eks:ListClusters",
+          "eks:DescribeFargateProfile",
+          "eks:ListFargateProfiles",
+          "eks:ListUpdates",
+          "eks:DescribeUpdate",
+          "eks:DescribeAddon",
+          "eks:ListAddons"
+        ],
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_user_policy_attachment" "k8s_viewer_readonly" {
+  user       = aws_iam_user.k8s_viewer.name
+  policy_arn = aws_iam_policy.eks_read_only.arn
+}
+
+=== File: modules/eks/iam/secret_manager_efs_role.tf ===
+
+# IAM Role para el Secret Manager y EFS access
+resource "aws_iam_role" "secret_manager_efs" {
+  name = "${var.cluster_name}-secret-manager-efs-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = "arn:aws:iam::${var.aws_account_id}:oidc-provider/${replace(var.cluster_oidc_issuer_url, "https://", "")}"
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "${replace(var.cluster_oidc_issuer_url, "https://", "")}:sub" : "system:serviceaccount:${var.app_namespace}:aws-secret-manager-sa"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.cluster_name}-secret-manager-efs-role"
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
+}
+
+# Política personalizada para acceso a Secrets Manager
+resource "aws_iam_policy" "secret_manager_access" {
+  name        = "${var.cluster_name}-secret-manager-policy"
+  description = "Policy for accessing secrets in AWS Secrets Manager"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:ListSecrets"
+        ]
+        Resource = [
+          "arn:aws:secretsmanager:*:${var.aws_account_id}:secret:hyperfy2-*",
+          "arn:aws:secretsmanager:*:${var.aws_account_id}:secret:github-*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+        Condition = {
+          StringLike = {
+            "kms:RequestAlias" : "alias/aws/secretsmanager"
+          }
+        }
+      }
+    ]
+  })
+}
+
+# Política personalizada para acceso a EFS
+resource "aws_iam_policy" "efs_access" {
+  name        = "${var.cluster_name}-efs-access-policy"
+  description = "Policy for accessing EFS file system"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "elasticfilesystem:ClientMount",
+          "elasticfilesystem:ClientWrite",
+          "elasticfilesystem:DescribeFileSystems",
+          "elasticfilesystem:DescribeMountTargets",
+          "elasticfilesystem:DescribeMountTargetSecurityGroups"
+        ]
+        Resource = "arn:aws:elasticfilesystem:*:${var.aws_account_id}:file-system/*"
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/Environment" : var.environment,
+            "aws:ResourceTag/ManagedBy" : "terraform"
+          }
+        }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "elasticfilesystem:CreateAccessPoint",
+          "elasticfilesystem:DeleteAccessPoint",
+          "elasticfilesystem:DescribeAccessPoints"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# Attachments de las políticas al rol
+resource "aws_iam_role_policy_attachment" "secret_manager_attachment" {
+  policy_arn = aws_iam_policy.secret_manager_access.arn
+  role       = aws_iam_role.secret_manager_efs.name
+}
+
+resource "aws_iam_role_policy_attachment" "efs_access_attachment" {
+  policy_arn = aws_iam_policy.efs_access.arn
+  role       = aws_iam_role.secret_manager_efs.name
+}
+
+=== File: modules/eks/iam/variables.tf ===
+
+variable "cluster_name" {
+  description = "Name of the EKS cluster"
+  type        = string
+}
+
+variable "environment" {
+  description = "Environment name (e.g., production, staging)"
+  type        = string
+}
+
+variable "cluster_oidc_issuer_url" {
+  description = "The URL on the EKS cluster for the OpenID Connect identity provider"
+  type        = string
+}
+
+variable "aws_account_id" {
+  description = "AWS Account ID"
+  type        = string
+}
+
+variable "app_namespace" {
+  description = "Kubernetes namespace where the application will be deployed"
+  type        = string
+  default     = "numinia"
+}
+
+=== File: modules/eks/variables.tf ===
+
+variable "cluster_name" {
+  description = "Name of the EKS cluster"
+  type        = string
+}
+
+variable "cluster_version" {
+  description = "Kubernetes version for the EKS cluster"
+  type        = string
+  default     = "1.32"
+}
+
+variable "vpc_id" {
+  description = "ID of the VPC where the cluster will be created"
+  type        = string
+}
+
+variable "vpc_subnet" {
+  description = "Subnet information for the VPC"
+  type = object({
+    id_a = string
+    id_b = string
+  })
+}
+
+variable "region" {
+  description = "AWS region where the cluster will be created"
+  type        = string
+}
+
+variable "environment" {
+  description = "Environment name (e.g., production, staging)"
+  type        = string
+}
+
+variable "cluster_config" {
+  description = "Configuration for the EKS cluster resources"
+  type = object({
+    max_cpu     = string
+    max_memory  = string
+    max_pods    = number
+    max_storage = string
+  })
+}
+
+variable "node_groups" {
+  description = "Configuration for EKS managed node groups"
+  type = map(object({
+    instance_type = string
+    min_size      = number
+    max_size      = number
+    desired_size  = optional(number)
+    capacity_type = optional(string, "SPOT")
+    labels        = optional(map(string), {})
+    taints = optional(list(object({
+      key    = string
+      value  = string
+      effect = string
+    })), [])
+  }))
+}
+
+=== File: environments/production/main.tf ===
+
+locals {
+  environment_name = "production"
+}
+
+module "main_vpc" {
+  source = "../../modules/vpc"
+  vpc = {
+    igw_cidr_block = "0.0.0.0/0"
+    range          = "10.0.0.0/16"
+    region         = var.eu_west_region
+    igw_name       = "${var.server_name}-main-igw"
+    name           = "${var.server_name}-main-vpc"
+    subnet_name    = "${var.server_name}-main-subnet"
+  }
+}
+
+module "eks" {
+  source = "../../modules/eks"
+  vpc_subnet = {
+    id_a = module.main_vpc.subnet_ids.id_a
+    id_b = module.main_vpc.subnet_ids.id_b
+  }
+  node_groups    = var.node_groups
+  cluster_name   = var.cluster_name
+  region         = var.eu_west_region
+  cluster_config = var.cluster_config
+  vpc_id         = module.main_vpc.vpc_id
+  environment    = local.environment_name
+}
+
+=== File: environments/production/variables.tf ===
+
+variable "eu_west_region" {
+  description = "The EU West region to deploy resources"
+  type        = string
+}
+
+variable "server_name" {
+  description = "The name of the server"
+  type        = string
+}
+
+variable "cluster_config" {
+  description = "Configuration for the EKS cluster"
+  type        = map(any)
+}
+
+variable "node_groups" {
+  description = "Configuration for the EKS node groups"
+  type        = map(any)
+}
+
+variable "cluster_name" {
+  description = "The name of the EKS cluster"
+  type        = string
+}
+
+=== File: main.tf ===
+
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.83.0"
+    }
+  }
+
+  required_version = ">= 1.7.3"
+}
+
+locals {
+  us_east_region_name = "us-east-1"
+  eu_west_region_name = "eu-west-1"
+
+  cluster_name = "numengames-prod-euw1-eks"
+}
+
+provider "aws" {
+  alias      = "us_east"
+  access_key = var.aws_access_key
+  secret_key = var.aws_secret_key
+  region     = local.us_east_region_name
+}
+
+provider "aws" {
+  access_key = var.aws_access_key
+  secret_key = var.aws_secret_key
+  region     = local.eu_west_region_name
+}
+
+data "aws_caller_identity" "current" {}
+
+module "certificate_manager_us_east" {
+  count             = var.enable_certificate_manager ? 1 : 0
+  source            = "./modules/acm"
+  validation_method = "EMAIL"
+  domain_name       = var.domain_name
+  providers         = { aws = aws.us_east }
+}
+
+module "certificate_manager_eu_west" {
+  count             = var.enable_certificate_manager ? 1 : 0
+  source            = "./modules/acm"
+  validation_method = "EMAIL"
+  domain_name       = var.domain_name
+}
+
+resource "aws_route53_zone" "route53_domain_zone" {
+  count = var.enable_route53 ? 1 : 0
+  name  = var.domain_name
+}
+
+module "secrets_manager" {
+  source  = "./modules/secrets-manager"
+  secrets = var.secrets
+}
+
+module "storage" {
+  count               = var.enable_storage ? 1 : 0
+  source              = "./modules/storage"
+  domain_name         = var.domain_name
+  environment         = "production"
+  project_name        = "numinia"
+  acm_certificate_arn = var.enable_certificate_manager ? module.certificate_manager_us_east[0].certificate_arn : null
+}
+
+module "production" {
+  source = "./environments/production"
+
+  server_name    = var.server_name
+  node_groups    = var.node_groups
+  cluster_config = var.cluster_config
+  cluster_name   = local.cluster_name
+  eu_west_region = local.eu_west_region_name
+}
+
+=== File: variables.tf ===
+
+variable "server_name" {
+  type = string
+}
+
+variable "domain_name" {
+  type = string
+}
+
+variable "environment" {
+  type    = string
+  default = "production"
+}
+
+#######################
+### AWS Credentials ###
+#######################
+
+variable "aws_access_key" {
+  type = string
+}
+
+variable "aws_secret_key" {
+  type = string
+}
+
+variable "us_east_region" {
+  type    = string
+  default = "us-east-1"
+}
+
+variable "eu_west_region" {
+  type    = string
+  default = "eu-west-1"
+}
+
+variable "secrets" {
+  description = "Mapa de secretos a crear"
+  type = map(object({
+    name   = string
+    values = map(string)
+  }))
+}
+
+variable "cluster_config" {
+  description = "Configuración del clúster EKS"
+  type = object({
+    max_cpu     = string
+    max_memory  = string
+    max_pods    = number
+    max_storage = string
+  })
+}
+
+variable "node_groups" {
+  description = "Configuración para los grupos de nodos de EKS"
+  type = map(object({
+    instance_type = string
+    min_size      = number
+    max_size      = number
+    desired_size  = optional(number)
+    capacity_type = optional(string, "SPOT")
+    labels        = optional(map(string), {})
+    taints = optional(list(object({
+      key    = string
+      value  = string
+      effect = string
+    })), [])
+  }))
+}
+
+variable "enable_certificate_manager" {
+  description = "Feature flag to enable/disable the Certificate Manager modules"
+  type        = bool
+  default     = false
+}
+
+variable "enable_storage" {
+  description = "Feature flag to enable/disable the Storage module"
+  type        = bool
+  default     = false
+}
+
+variable "enable_route53" {
+  description = "Feature flag to enable/disable Route53 resources"
+  type        = bool
+  default     = false
+}
