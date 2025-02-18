@@ -29,7 +29,8 @@ resource "aws_iam_policy" "eks_read_only" {
           "eks:ListUpdates",
           "eks:DescribeUpdate",
           "eks:DescribeAddon",
-          "eks:ListAddons"
+          "eks:ListAddons",
+          "eks:AccessKubernetesApi"
         ],
         Resource = "*"
       }
