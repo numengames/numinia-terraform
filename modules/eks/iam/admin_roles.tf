@@ -9,11 +9,8 @@ resource "aws_iam_role" "eks_admin" {
         Action = "sts:AssumeRole"
         Effect = "Allow"
         Principal = {
-          AWS = [
-            "arn:aws:iam::${var.aws_account_id}:user/terraform",
-            "arn:aws:iam::${var.aws_account_id}:role/${var.cluster_name}-k8s-admin-role",
-          ]
-          Service = ["eks.amazonaws.com"]
+          AWS = "arn:aws:iam::${var.aws_account_id}:user/terraform"
+          Service = "eks.amazonaws.com"
         }
       }
     ]
