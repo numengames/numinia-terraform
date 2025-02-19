@@ -89,4 +89,4 @@ output "org_efs_dns_names" {
   value = {
     for org, efs in aws_efs_file_system.org_storage : org => efs.dns_name
   }
-} 
+}

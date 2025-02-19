@@ -30,39 +30,21 @@ locals {
     ManagedBy   = "terraform"
   }
 
-  # Desensitize all configuration values that might be used in for_each
+  # Base configuration from tfvars
   base_config = {
-    server_name  = nonsensitive(local.secrets.server_name)
-    domain_name  = nonsensitive(local.secrets.domain_name)
-    cluster_name = "${nonsensitive(local.secrets.server_name)}-${local.environment}-eks"
+    server_name  = var.server_name
+    domain_name  = var.domain_name
+    cluster_name = "${var.server_name}-${local.environment}-eks"
   }
 
-  # Desensitize cluster configuration
-  cluster_config = {
-    max_cpu     = nonsensitive(local.secrets.cluster_config.max_cpu)
-    max_memory  = nonsensitive(local.secrets.cluster_config.max_memory)
-    max_pods    = nonsensitive(local.secrets.cluster_config.max_pods)
-    max_storage = nonsensitive(local.secrets.cluster_config.max_storage)
-  }
+  # Cluster configuration
+  cluster_config = var.cluster_config
 
-  # First, create a non-sensitive version of the node groups map keys
-  node_group_names = nonsensitive(keys(local.secrets.node_groups))
-
-  # Then, create the node groups configuration using the non-sensitive keys
+  # Node groups configuration with merged tags
   node_groups_config = {
-    for name in local.node_group_names : name => {
-      name          = name
-      instance_type = nonsensitive(local.secrets.node_groups[name].instance_type)
-      min_size      = nonsensitive(local.secrets.node_groups[name].min_size)
-      max_size      = nonsensitive(local.secrets.node_groups[name].max_size)
-      desired_size  = try(nonsensitive(local.secrets.node_groups[name].desired_size), null)
-      capacity_type = try(nonsensitive(local.secrets.node_groups[name].capacity_type), "SPOT")
-      labels        = merge(
-        try(nonsensitive(local.secrets.node_groups[name].labels), {}),
-        local.common_tags
-      )
-      taints = try(nonsensitive(local.secrets.node_groups[name].taints), [])
-    }
+    for name, config in var.node_groups : name => merge(config, {
+      labels = merge(try(config.labels, {}), local.common_tags)
+    })
   }
 }
 
@@ -73,20 +55,6 @@ provider "aws" {
 
 provider "aws" {
   region = local.eu_west_region_name
-}
-
-# Fetch secrets from AWS Secrets Manager
-data "aws_secretsmanager_secret" "terraform_secrets" {
-  name = var.secret_name
-}
-
-data "aws_secretsmanager_secret_version" "current" {
-  secret_id = data.aws_secretsmanager_secret.terraform_secrets.id
-}
-
-locals {
-  # Parse secrets from AWS Secrets Manager
-  secrets = jsondecode(data.aws_secretsmanager_secret_version.current.secret_string)
 }
 
 data "aws_caller_identity" "current" {}
